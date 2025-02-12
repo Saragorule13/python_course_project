@@ -1,51 +1,56 @@
-import os
 from fastapi import FastAPI
-from pydantic import BaseModel
-import google.generativeai as genai
+from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi.middleware.cors import CORSMiddleware
+import os
 from dotenv import load_dotenv
+import google.generativeai as genai
+from pydantic import BaseModel
 
 load_dotenv()
 
 apiKey = os.getenv("API_KEY")
+mongo_url = os.getenv("MONGO_URL")  # Your MongoDB connection string
 
-# Set up FastAPI app
+# Initialize FastAPI
 app = FastAPI()
 
-# Allow requests from React frontend
+# Allow requests from frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Update this with your frontend URL in production
+    allow_origins=["*"],  # Update with frontend URL in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure Gemini API
+# Connect to MongoDB
+client = AsyncIOMotorClient(mongo_url)
+db = client.chatbot_db
+collection = db.conversations
+
+# Configure Gemini AI
 genai.configure(api_key=apiKey)
+model = genai.GenerativeModel("gemini-2.0-flash")
 
-# Model Configuration
-generation_config = {
-    "temperature": 1,
-    "top_p": 0.95,
-    "top_k": 40,
-    "max_output_tokens": 8192,
-    "response_mime_type": "text/plain",
-}
 
-model = genai.GenerativeModel(
-    model_name="gemini-2.0-flash",
-    generation_config=generation_config,
-)
-
-# Define request model
+# Request model
 class ChatRequest(BaseModel):
     message: str
 
-# API route for chatbot response
+
+# API endpoint to store and respond to user messages
 @app.post("/chat")
 async def chat(request: ChatRequest):
     response = model.generate_content(request.message)
+
+    chat_data = {"question": request.message, "answer": response.text}
+    await collection.insert_one(chat_data)  # Save to MongoDB
+
     return {"reply": response.text}
 
-# Run the API using: uvicorn main:app --reload
+
+# API endpoint to retrieve stored chat history
+@app.get("/history")
+async def get_chat_history():
+    chats = await collection.find().to_list(100)  # Get latest 100 messages
+    return [{"question": chat["question"], "answer": chat["answer"]} for chat in chats]
